@@ -1,0 +1,900 @@
+################INSTALAÇÃO DE PACOTES################
+
+# Lista de pacotes necessários
+packages <- c("haven", "dplyr", "tidyr", "collapse", "data.table", 
+              "geobr", "fixest", "modelsummary", "gt", "did", "htmlTable", 
+              "broom", "Matrix", "webshot2", "knitr", "cobalt", "patchwork", 
+              "forcats", "MatchIt", "broom.helpers","stringr","kableExtra", "pscl", "margins")
+
+# Verificar e instalar pacotes faltantes
+for (pkg in packages) {
+  if (!require(pkg, character.only = TRUE, quietly = TRUE)) {
+    if (pkg == "Matrix") {
+      install.packages(pkg, repos = "https://cloud.r-project.org/")
+    } else {
+      install.packages(pkg)
+    }
+  }
+}
+
+###############DESCARREGANDO PACOTES################
+library(margins)
+library(haven)
+library(dplyr)
+library(tidyr)    
+library(collapse)
+library(data.table)
+library(ggplot2)
+library(scales)
+library(geobr)
+library(sf)
+library(geobr)
+library(fixest)
+library(modelsummary)
+library(gt)
+library(did)
+library(gt)
+library(htmlTable)
+library(broom)
+library(Matrix)
+library(webshot2)
+library(purrr)
+library(knitr)
+library(cobalt)
+library(patchwork)
+library(forcats)
+library(MatchIt)
+library(ggplot2)
+library(broom.helpers)
+library(stringr)
+library(kableExtra)
+
+
+## Carregando a base de dados
+base_final_3anos <- read_dta("base_final_3anos.dta")
+
+
+base_final_3anos <- base_final_3anos %>%
+  mutate(
+    região = case_when(
+      id_uf %in% c(11, 12, 13, 14, 15, 16, 17) ~ "Norte",
+      id_uf %in% c(21, 22, 23, 24, 25, 26, 27, 28, 29) ~ "Nordeste",
+      id_uf %in% c(31, 32, 33, 35) ~ "Sudeste",
+      id_uf %in% c(41, 42, 43) ~ "Sul",
+      id_uf %in% c(50, 51, 52, 53) ~ "Centro_Oeste",
+      TRUE ~ NA_character_  # Caso haja códigos não mapeados
+    )
+  )
+
+## Filtrar 3 anos
+
+# Filtrar escolas presentes nos 3 anos
+base_final_3anos <- base_final_3anos %>%
+  group_by(id_escola) %>%
+  filter(
+    all(c(2007, 2009, 2011) %in% ano) # Verifica presença nos 3 anos
+  ) %>%
+  ungroup()
+
+## ID_DEPENDENCIA_ADM
+
+
+base_final_3anos <- base_final_3anos %>%
+  # Renomear os valores de id_dependencia_adm
+  mutate(
+    id_dependencia_adm = case_when(
+      id_dependencia_adm == 1 ~ "Federal",
+      id_dependencia_adm == 2 ~ "Estadual",
+      id_dependencia_adm == 3 ~ "Municipal",
+      TRUE ~ NA_character_  # Caso haja códigos não mapeados
+    )
+  ) %>%
+  # Converter id_dependencia_adm para fator com níveis ordenados
+  mutate(
+    id_dependencia_adm = factor(id_dependencia_adm, 
+                                levels = c("Federal", "Estadual", "Municipal"))
+  ) %>%
+  # Filtrar para remover todas as escolas federais
+  filter(
+    id_dependencia_adm != "Federal"
+  )
+
+################GRÁFICO :EVOLUÇÃO DE CRITÉRIO#################
+
+# Criar base agregada com porcentagens
+dados_linhas <- base_final_3anos %>%
+  group_by(ano, criterio_binario) %>%
+  summarise(
+    n_escolas = n_distinct(id_escola),
+    .groups = "drop"
+  ) %>%
+  group_by(ano) %>%  # Agrupar por ano para calcular % anual
+  mutate(
+    total_ano = sum(n_escolas),
+    percentual = round((n_escolas / total_ano) * 100, 1)
+  ) %>%
+  ungroup() %>%
+  mutate(
+    criterio_binario = factor(
+      criterio_binario,
+      levels = c(0, 1),
+      labels = c("Indicação", "Critério Técnico")
+    )
+  )
+
+# Gerar gráfico com porcentagens
+ggplot(dados_linhas, aes(x = factor(ano), y = percentual, 
+                         color = criterio_binario, group = criterio_binario)) +
+  geom_line(size = 1.2) +
+  geom_point(size = 3) +
+  geom_text(
+    aes(label = paste0(percentual, "%")),  # Mostrar % com símbolo
+    vjust = -0.8,
+    size = 4.5,
+    fontface = "bold"
+  ) +
+  scale_color_manual(values = c("Indicação" = "gray50", "Critério Técnico" = "black")) +
+  scale_y_continuous(
+    limits = c(45, 55),  # Fixar escala de 0 a 100%
+    labels = scales::percent_format(scale = 1)  # Formato de porcentagem
+  ) +
+  labs(
+    title = "Evolução dos Métodos de Seleção",
+    subtitle = "Proporção de escolas por critério (2007-2011)",
+    x = "Ano",
+    y = "Proporção de Escolas (%)",
+    color = "Método de Seleção"
+  ) +
+  theme_gray(base_size = 14) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold", size = 16),
+    plot.subtitle = element_text(hjust = 0.5, size = 12),
+    legend.position = "top",
+    legend.title = element_text(face = "bold"),
+    panel.grid.major.x = element_blank(),
+    axis.text = element_text(size = 12)
+  )
+
+
+
+######### GRAFICO: DINAMICA DE TRATAMENTO #######
+
+# 1. Criar matriz de tratamento por escola
+base_trajetorias <- base_final_3anos %>%
+  select(id_escola, ano, criterio_binario) %>%
+  pivot_wider(
+    names_from = ano,
+    values_from = criterio_binario,
+    names_prefix = "ano_"
+  ) %>%
+  mutate(
+    trajetoria = case_when(
+      ano_2007 == 0 & ano_2009 == 0 & ano_2011 == 0 ~ "Controle",
+      ano_2007 == 1 & ano_2009 == 1 & ano_2011 == 1 ~ "Critério Técnico",
+      ano_2007 == 0 & ano_2009 == 1 & ano_2011 == 1 ~ "Tratamento em 2009",
+      ano_2007 == 0 & ano_2009 == 0 & ano_2011 == 1 ~ "Tratamento em 2011",
+      TRUE ~ "Outros Padrões"
+    )
+  )
+
+
+# 2. Calcular frequências CORRETO (CÓDIGO REVISADO)
+dados_grafico <- base_trajetorias %>%
+  group_by(trajetoria) %>%
+  summarise(
+    n_escolas = n(),  # <----- VÍRGULA AQUI!
+    .groups = "drop"  # Mantém o parâmetro de controle de agrupamento
+  ) %>%
+  mutate(
+    percentual = round(n_escolas/sum(n_escolas)*100, 1),
+    trajetoria = factor(trajetoria, 
+                        levels = c("Controle", 
+                                   "Tratamento em 2009",
+                                   "Tratamento em 2011",
+                                   "Critério Técnico",
+                                   "Outros Padrões"))
+  )
+# 3. Gerar gráfico
+ggplot(dados_grafico %>% filter(trajetoria != "Outros Padrões"), 
+       aes(x = reorder(trajetoria, n_escolas), 
+           y = n_escolas,
+           fill = trajetoria)) +
+  geom_col(show.legend = FALSE, width = 0.8) +
+  geom_text(aes(label = paste0(n_escolas, "\n(", percentual, "%)")), 
+            hjust = -0.1, size = 3.5, color = "black") +
+  coord_flip() +
+  scale_fill_grey(start = 0.3, end = 0.7) +
+  labs(title = "Dinâmica de Adoção do Tratamento",
+       subtitle = "Trajetórias de tratamento entre 2007-2011",
+       x = "",
+       y = "Número de Escolas",
+       caption = "Fonte: Dados da pesquisa | Elaboração própria") +
+  theme_gray(base_size = 12) +
+  theme(
+    plot.title = element_text(face = "bold", hjust = 0.5, size = 14),
+    plot.subtitle = element_text(hjust = 0.5, color = "gray40"),
+    axis.text.y = element_text(size = 11),
+    panel.grid.major.y = element_blank(),
+    plot.caption = element_text(hjust = 0, color = "gray50")
+  ) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.15)))
+
+
+# Filtrar escolas que NÃO mantiveram o critério técnico nos 3 anos
+base_final_3anos <- base_final_3anos %>%
+  group_by(id_escola) %>%
+  filter(
+    !all(criterio_binario == 1) # Exclui escolas com critério 1 em todos os anos
+  ) %>%
+  ungroup()
+
+
+################ EFEITO FIXO ######################
+
+# 1. Criar variáveis de tratamento dinâmico
+base_final_3anos <- base_final_3anos %>%
+  group_by(id_escola) %>%
+  mutate(
+    # Identificar ano de tratamento
+    ano_tratamento = case_when(
+      criterio_binario == 1 & lag(criterio_binario, default = 0) == 0 ~ ano,
+      TRUE ~ NA_real_
+    ),
+    ano_tratamento = max(ano_tratamento, na.rm = TRUE),
+    ano_tratamento = ifelse(ano_tratamento == -Inf, NA, ano_tratamento),
+    
+    # Criar dummies de tratamento
+    treat_2009 = ifelse(ano_tratamento == 2009, 1, 0),
+    treat_2011 = ifelse(ano_tratamento == 2011, 1, 0),
+    
+    # Criar variáveis de interação tempo-tratamento
+    d_2009 = ifelse(ano == 2009, 1, 0),
+    d_2011 = ifelse(ano == 2011, 1, 0),
+    
+    int_2009_09 = treat_2009 * d_2009,
+    int_2009_11 = treat_2009 * d_2011,
+    int_2011_11 = treat_2011 * d_2011
+  ) %>%
+  ungroup()
+
+# 1. Modelos com efeitos fixos (escola + ano)
+fe_dynamic_lp <- feols(
+  media_profic_lp ~ int_2009_09 + int_2009_11 + int_2011_11 +
+    pct_feminino + pct_cor_preta + pct_computador +
+    max_escolaridade_mae_pai + pct_pais_incentivam + pct_trabalha_fora + região + id_dependencia_adm
+  | id_escola + ano,  # Efeitos fixos aqui
+  data = base_final_3anos,
+  cluster = ~id_escola  # Correção de erros clusterizados
+)
+
+fe_dynamic_mat <- feols(
+  media_profic_mat ~ int_2009_09 + int_2009_11 + int_2011_11 +
+    pct_feminino + pct_cor_preta + pct_computador +
+    max_escolaridade_mae_pai + pct_pais_incentivam + pct_trabalha_fora + região + id_dependencia_adm
+  | id_escola + ano,  # Efeitos fixos aqui
+  data = base_final_3anos,
+  cluster = ~id_escola
+)
+
+model_list_fe <- list(
+  "FE (LP)" = fe_dynamic_lp,
+  "FE (MAT)" = fe_dynamic_mat
+)
+
+# Tabela formatada para modelos com efeitos fixos
+tabela_fe_dinamica <- modelsummary(
+  model_list_fe,
+  coef_map = c(
+    "int_2009_09" = "Tratado em 2009 × 2009",
+    "int_2009_11" = "Tratado em 2009 × 2011",
+    "int_2011_11" = "Tratado em 2011 × 2011",
+    "pct_feminino" = "% Alunas (Feminino)",
+    "pct_cor_preta" = "% Alunos Pretos",
+    "pct_computador" = "% com Computador",
+    "max_escolaridade_mae_pai" = "Max Educ Pai/Mãe",
+    "pct_pais_incentivam" = "% Pais Incentivam Estudo",
+    "pct_trabalha_fora" = "% Trabalha Fora",
+    "região" = "Região",
+    "id_dependencia_adm" = "Dependencia Adm"
+  ),
+  gof_map = c("nobs", "r.squared"),
+  stars = c('*' = 0.1, '**' = 0.05, '***' = 0.01),
+  title = "Efeitos Dinâmicos com Efeitos Fixos no Desempenho Escolar",
+  notes = list(
+    "Erros padrão clusterizados por escola entre parênteses",
+    "Período analisado: 2007-2011",
+    "Inclui efeitos fixos de escola e ano",
+    "Todos os modelos incluem controles de características dos alunos"
+  ),
+  output = "kableExtra"
+) %>% 
+  kable_styling(
+    bootstrap_options = c("striped", "hover", "condensed"),
+    font_size = 12,
+    full_width = FALSE,
+    latex_options = "hold_position"
+  ) %>% 
+  add_header_above(c(" " = 1, "Português (LP)" = 1, "Matemática (MAT)" = 1)) %>% 
+  footnote(
+    general = "Fonte: Elaboração própria com dados da pesquisa",
+    general_title = "Nota:",
+    footnote_as_chunk = TRUE
+  ) %>% 
+  row_spec(0, bold = TRUE, background = "#F5F5F5") %>% 
+  column_spec(1, width = "4.5cm") %>% 
+  column_spec(2:3, width = "3cm") %>% 
+  scroll_box(width = "100%", height = "auto")
+
+# Exibir a tabela
+tabela_fe_dinamica
+
+
+####### LOGIT E PSM ######################
+
+
+## FILTRAGEM 
+# Filtrar base para 2007, remover Federais, criar variável de tratamento eventual
+base_2007 <- base_final_3anos %>%
+  filter(ano == 2007) %>%
+  filter(id_dependencia_adm != "Federal") %>%  # Remove "Federal"
+  droplevels() %>%
+  mutate(
+    treat_eventual = ifelse(!is.na(ano_tratamento), 1, 0)  # 1 se será tratada em 2009/2011
+  ) %>%
+  filter(
+    complete.cases(select(., pct_feminino, pct_cor_preta, pct_computador,
+                          max_escolaridade_mae_pai, pct_pais_incentivam, 
+                          pct_trabalha_fora, região, id_dependencia_adm))
+  ) %>%
+  # Converter 'região' para fator com níveis apropriados
+  mutate(
+    região = factor(região, levels = c("Norte", "Nordeste", "Sudeste", "Sul", "Centro_Oeste"))
+  )
+
+# Assegurar múltiplos níveis de 'região'
+if (nlevels(base_2007$região) < 2) {
+  stop("A variável 'região' possui apenas uma categoria após filtragem. Verifique os dados.")
+}
+
+# Definir codificação de efeitos "sum" para 'id_dependencia_adm' e 'região'
+contrasts(base_2007$id_dependencia_adm) <- contr.sum(nlevels(base_2007$id_dependencia_adm))
+contrasts(base_2007$região) <- contr.sum(nlevels(base_2007$região))
+
+## MODELO (incluindo id_dependencia_adm com codificação "sum")
+modelo_logit <- glm(
+  treat_eventual ~ pct_feminino + pct_cor_preta + pct_computador + 
+    max_escolaridade_mae_pai + pct_pais_incentivam + pct_trabalha_fora +
+    região + id_dependencia_adm,    
+  family = binomial(link = "logit"),
+  data = base_2007
+)
+
+# Calcular efeitos marginais
+marginal_effects <- margins(modelo_logit)
+
+marginal_effects_df <- summary(marginal_effects) %>%
+  rename(
+    term      = factor,  # "factor" contém os nomes das variáveis
+    estimate  = AME,     # "AME" contém os efeitos marginais
+    std.error = SE,      # "SE" contém os erros padrão
+    statistic = z,       # "z" contém os valores Z
+    p.value   = p        # "p" contém os p-valores
+  ) %>%
+  mutate(
+    significance = case_when(
+      p.value < 0.01 ~ "***",
+      p.value < 0.05 ~ "**",
+      p.value < 0.1  ~ "*",
+      TRUE           ~ ""
+    )
+  )
+
+# Mapeamento dos nomes das variáveis para apresentação
+coef_map <- c(
+  "max_escolaridade_mae_pai" = "Escolaridade Máxima dos Pais",
+  "pct_computador"           = "% Computador",
+  "pct_cor_preta"            = "% Cor Preta",
+  "pct_feminino"             = "% Feminino",
+  "pct_pais_incentivam"      = "% Pais que Incentivam",
+  "pct_trabalha_fora"        = "% Trabalha Fora",
+  "regiãoCentro_Oeste"       = "Região Centro Oeste",
+  "regiãoNordeste"           = "Região Nordeste",
+  "regiãoNorte"              = "Região Norte",
+  "regiãoSudeste"            = "Região Sudeste",
+  "regiãoSul"                = "Região Sul",
+  "id_dependencia_admEstadual"  = "Dependência Administrativa Estadual",
+  "id_dependencia_admMunicipal" = "Dependência Administrativa Municipal"
+)
+
+marginal_effects_df <- marginal_effects_df %>%
+  mutate(term = recode(term, !!!coef_map))
+
+# Criar e formatar a tabela de efeitos marginais
+tabela_marginal_effects <- marginal_effects_df %>%
+  select(term, estimate, std.error, statistic, p.value, significance) %>%
+  mutate(
+    estimate   = sprintf("%.4f", estimate),
+    std.error  = sprintf("(%.4f)", std.error),
+    statistic  = sprintf("z = %.2f", statistic),
+    p.value    = sprintf("p = %.3f", p.value),
+    estimate   = paste0(estimate, significance)
+  ) %>%
+  select(term, estimate, std.error, statistic, p.value) %>%
+  kable(
+    format   = "html",
+    caption  = "Efeitos Marginais do Modelo Logit",
+    col.names = c("Variável", "Efeito Marginal", "Erro Padrão", "Estatística Z", "P-valor"),
+    align    = "lcccc"
+  ) %>%
+  kable_styling(
+    bootstrap_options = c("striped", "hover", "condensed"),
+    font_size         = 12,
+    full_width        = FALSE,
+    position          = "center"
+  ) %>%
+  row_spec(0, bold = TRUE, background = "#F5F5F5") %>%
+  column_spec(2:5, width = "3cm") %>%
+  footnote(
+    general          = "Fonte: Elaboração própria com dados da pesquisa",
+    general_title    = "Nota:",
+    footnote_as_chunk = TRUE
+  )
+
+# Exibir a tabela
+tabela_marginal_effects
+
+## PROPENSITY SCORE 
+base_2007 <- base_2007 %>%
+  mutate(
+    pscore = predict(modelo_logit, type = "response")
+  )
+
+####################### GRÁFICOS MATCHING ##############################
+
+# Gráfico 1: Densidade do PS antes de qualquer ajuste
+ggplot(base_2007, aes(x = pscore, fill = factor(treat_eventual))) +
+  geom_density(alpha = 0.5) +
+  scale_fill_manual(
+    values = c("0" = "#F8766D", "1" = "#00BFC4"),
+    labels = c("Controle (Nunca Tratada)", "Será Tratada (2009/2011)")
+  ) +
+  labs(
+    title = "Distribuição do Propensity Score - Pré Matching",
+    subtitle = "Comparação entre grupos de tratamento e controle",
+    x = "Propensity Score",
+    y = "Densidade",
+    fill = "Grupo"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    plot.subtitle = element_text(hjust = 0.5, color = "gray40"),
+    legend.position = "top"
+  )
+
+# MATCHING (incluindo id_dependencia_adm e caliper reduzido)
+match_model <- matchit(
+  treat_eventual ~ pct_feminino + pct_cor_preta + pct_computador + 
+    max_escolaridade_mae_pai + pct_pais_incentivam + pct_trabalha_fora +
+    região + id_dependencia_adm,  # Removido duplicação das variáveis
+  method = "nearest", 
+  distance = "glm", 
+  caliper = 0.1,                      # Caliper reduzido
+  std.caliper = TRUE, 
+  data = base_2007
+)
+
+# Extrair base matched
+base_matched <- match.data(match_model)
+
+# Gráfico 2: Curvas de Densidade Pós-Matching (com preenchimento)
+ggplot(base_matched, aes(x = pscore, fill = factor(treat_eventual))) +
+  geom_density(alpha = 0.5) +
+  scale_fill_manual(
+    values = c("0" = "#F8766D", "1" = "#00BFC4"),
+    labels = c("Controle (Nunca Tratada)", "Tratada (2009/2011)")
+  ) +
+  labs(
+    title = "Distribuição do Propensity Score - Pós Matching",
+    subtitle = "Comparação após pareamento entre grupos",
+    x = "Propensity Score",
+    y = "Densidade",
+    fill = "Grupo"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    plot.subtitle = element_text(hjust = 0.5, color = "gray40"),
+    legend.position = "top",
+    panel.grid.major = element_line(linewidth = 0.2)
+  )
+
+##################### PORCENTAGEM DE TRATADOS ####################
+
+# Calcular porcentagem e contagem de tratados e não tratados na amostra original
+percent_treated_original <- base_2007 %>%
+  summarise(
+    total = n(),
+    tratados = sum(treat_eventual),
+    nao_tratados = total - tratados,
+    percent_tratados = round((tratados / total) * 100, 2),
+    percent_nao_tratados = round((nao_tratados / total) * 100, 2)
+  )
+
+# Calcular porcentagem e contagem de tratados e não tratados na amostra matched
+percent_treated_matched <- base_matched %>%
+  summarise(
+    total = n(),
+    tratados = sum(treat_eventual),
+    nao_tratados = total - tratados,
+    percent_tratados = round((tratados / total) * 100, 2),
+    percent_nao_tratados = round((nao_tratados / total) * 100, 2)
+  )
+
+# Combinar os resultados em uma única tabela
+comparacao_tratamento <- bind_rows(
+  "Original" = percent_treated_original,
+  "Matched" = percent_treated_matched,
+  .id = "Amostra"
+) %>%
+  select(Amostra, total, tratados, nao_tratados, percent_tratados, percent_nao_tratados)
+
+# Exibir a tabela comparativa com formatação
+comparacao_tratamento %>%
+  mutate(
+    Amostra = factor(Amostra, levels = c("Original", "Matched"))
+  ) %>%
+  arrange(Amostra) %>%
+  kable(
+    format = "html",
+    caption = "Comparação da Porcentagem e Contagem de Tratados nas Amostras Original e Matched",
+    col.names = c("Amostra", "Total de Escolas (n)", "Tratados (n)", "Não Tratados (n)", 
+                  "Porcentagem de Tratados (%)", "Porcentagem de Não Tratados (%)"),
+    align = "lcccccc"
+  ) %>%
+  kable_styling(
+    bootstrap_options = c("striped", "hover", "condensed"),
+    font_size = 12,
+    full_width = FALSE,
+    position = "center"
+  ) %>%
+  row_spec(0, bold = TRUE, background = "#F5F5F5") %>%
+  column_spec(1, width = "4cm") %>%
+  column_spec(2:6, width = "2cm") %>%
+  footnote(
+    general = "Fonte: Elaboração própria com dados da pesquisa",
+    general_title = "Nota:",
+    footnote_as_chunk = TRUE
+  )
+
+########## ANTES E DEPOIS DAS VARIÁVEIS ##########
+
+coef_map <- c(
+  "max_escolaridade_mae_pai" = "Escolaridade Máxima dos Pais",
+  "pct_computador" = "% Computador",
+  "pct_cor_preta" = "% Cor Preta",
+  "pct_feminino" = "% Feminino",
+  "pct_pais_incentivam" = "% Pais que Incentivam",
+  "pct_trabalha_fora" = "% Trabalha Fora",
+  "regiãoCentro_Oeste" = "Centro Oeste",
+  "regiãoNordeste" = "Nordeste",
+  "regiãoNorte" = "Norte",
+  "regiãoSudeste" = "Sudeste",
+  "regiãoSul" = "Sul",
+  "id_dependencia_admEstadual" = "Dependência Administrativa Estadual",
+  "id_dependencia_admMunicipal" = "Dependência Administrativa Municipal"
+
+)
+
+# Criar o Love Plot com nomes das variáveis mapeados
+love.plot(
+  match_model,                     
+  stat = "mean.diffs",             
+  abs = FALSE,                     
+  var.order = "unadjusted",        
+  threshold = 0.1,                 
+  line = TRUE,                     
+  var.names = coef_map,            
+  colors = c("grey", "blue"),      
+  shapes = c("circle", "triangle"),
+  size = 3
+) +
+  labs(
+    title = "Plot de Balanceamento das Covariáveis",
+    subtitle = "Antes e Depois do Matching",
+    x = "Diferença Padronizada de Médias",
+    y = "Covariáveis"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    plot.subtitle = element_text(hjust = 0.5, color = "gray40")
+  )
+
+
+############ DiD MQO  FE#############################
+
+
+
+# Criação das variáveis DiD
+
+base_final_3anos <- base_final_3anos %>%
+  mutate(
+    # tratamento = 1 se a escola de fato foi tratada em 2009 ou 2011
+    tratamento = ifelse(ano_tratamento %in% c(2009, 2011) & !is.na(ano_tratamento), 1, 0),
+    
+    # post = 1 se o ano de observação é >= ano_tratamento daquela escola
+    post = ifelse(ano >= ano_tratamento & !is.na(ano_tratamento), 1, 0),
+    
+    # Variável de interação DiD
+    did = tratamento * post
+  ) %>%
+  # Transforma região em fator, se ainda não for
+  mutate(região = as.factor(região))
+
+# Lista de covariadas atualizada
+
+covariadas <- c(
+  "pct_feminino", 
+  "pct_cor_preta", 
+  "pct_computador",
+  "max_escolaridade_mae_pai", 
+  "pct_pais_incentivam", 
+  "pct_trabalha_fora", 
+  "região",
+  "id_dependencia_adm"
+)
+
+
+# Modelos com Efeitos Fixos (escola + ano)
+
+
+# 1. Modelos para Matemática
+did_mat_simples <- feols(
+  media_profic_mat ~ did | id_escola + ano,  # Efeitos fixos de escola e ano
+  data = base_final_3anos,
+  cluster = ~id_escola
+)
+
+did_mat_covariadas <- feols(
+  media_profic_mat ~ did + pct_feminino + pct_cor_preta + pct_computador +
+    max_escolaridade_mae_pai + pct_pais_incentivam + pct_trabalha_fora +
+    região + id_dependencia_adm
+  | id_escola + ano,                        # Efeitos fixos de escola e ano
+  data = base_final_3anos,
+  cluster = ~id_escola
+)
+
+# 2. Modelos para Português (Leitura/LP)
+did_lp_simples <- feols(
+  media_profic_lp ~ did | id_escola + ano,  # Efeitos fixos de escola e ano
+  data = base_final_3anos,
+  cluster = ~id_escola
+)
+
+did_lp_covariadas <- feols(
+  media_profic_lp ~ did + pct_feminino + pct_cor_preta + pct_computador +
+    max_escolaridade_mae_pai + pct_pais_incentivam + pct_trabalha_fora +
+    região + id_dependencia_adm
+  | id_escola + ano,                        # Efeitos fixos de escola e ano
+  data = base_final_3anos,
+  cluster = ~id_escola
+)
+
+# Organizar modelos em uma lista
+
+modelos_did_total <- list(
+  "DiD Simples (Mat)"       = did_mat_simples,
+  "DiD Covariadas (Mat)"    = did_mat_covariadas,
+  "DiD Simples (Port)"      = did_lp_simples,
+  "DiD Covariadas (Port)"   = did_lp_covariadas
+)
+
+
+# Mapeamento de nomes das variáveis para aparecer na tabela
+
+nomes_variaveis <- c(
+  "did"                     = "Efeito DiD (Tratamento × Pós)",
+  "pct_feminino"            = "% Alunas Feminino",
+  "pct_cor_preta"           = "% Alunos Pretos",
+  "pct_computador"          = "% com Computador",
+  "max_escolaridade_mae_pai"= "Escolaridade Máxima Pais",
+  "pct_pais_incentivam"     = "% Pais Incentivam Estudo",
+  "pct_trabalha_fora"       = "% Trabalha Fora",
+  "região"                  = "Região",
+  "id_dependencia_adm"      = "Dependência Adm"
+)
+
+
+# Geração da Tabela com modelsummary
+
+tabela_did <- modelsummary(
+  modelos_did_total,
+  coef_map  = nomes_variaveis, 
+  # Filtra as variáveis que aparecerão (DiD + covariadas) na tabela
+  keep      = c("did", covariadas),
+  gof_map   = c("nobs", "r.squared"),
+  stars     = c('*' = 0.1, '**' = 0.05, '***' = 0.01),
+  title     = "Efeito do Critério Técnico no Desempenho Escolar (DiD com FE)",
+  notes     = list(
+    "Erros padrão clusterizados por escola entre parênteses",
+    "Período analisado: 2007-2011",
+    "Modelos (2) e (4) incluem controles de características dos alunos, infraestrutura, região e dependência administrativa",
+    "Inclui efeitos fixos de escola e ano em todos os modelos"
+  ),
+  output    = "kableExtra"
+) %>% 
+  kable_styling(
+    bootstrap_options = c("striped", "hover", "condensed"),
+    font_size = 12,
+    full_width = FALSE,
+    latex_options = "hold_position"
+  ) %>% 
+  add_header_above(
+    c(" " = 1, "Matemática (MAT)" = 2, "Português (LP)" = 2)
+  ) %>%
+  footnote(
+    general = "Fonte: Elaboração própria com dados da pesquisa",
+    general_title = "Nota:",
+    footnote_as_chunk = TRUE
+  )
+
+# Visualizar tabela
+
+tabela_did
+
+
+##################### DiD PSM #############
+
+# 1. Extrair lista de escolas matched (após o pareamento)
+
+escolas_matched <- base_matched$id_escola
+
+# 2. Filtrar a base original APENAS para escolas matched (em todos os anos)
+
+base_matched_corrected <- base_final_3anos %>%
+  filter(id_escola %in% escolas_matched)
+
+
+# 3. Adicionar os pesos do matching à base corrigida (após garantir correspondência)
+
+pesos_matching <- base_matched %>%
+  select(id_escola, weights)
+
+base_matched_corrected <- base_matched_corrected %>%
+  left_join(pesos_matching, by = "id_escola")
+
+
+# 4. Recriar variáveis de DiD na base corrigida
+
+base_matched_corrected <- base_matched_corrected %>%
+  mutate(
+    tratamento = ifelse(ano_tratamento %in% c(2009, 2011), 1, 0),
+    post = case_when(
+      ano_tratamento == 2009 & ano >= 2009 ~ 1,
+      ano_tratamento == 2011 & ano >= 2011 ~ 1,
+      TRUE ~ 0
+    ),
+    did = tratamento * post,
+    região = as.factor(região)  # Garante que 'região' seja fator
+  )
+
+
+# Lista de covariadas (incluindo região e id_dependencia_adm)
+
+covariadas <- c(
+  "pct_feminino", 
+  "pct_cor_preta", 
+  "pct_computador",
+  "max_escolaridade_mae_pai", 
+  "pct_pais_incentivam", 
+  "pct_trabalha_fora",
+  "região",
+  "id_dependencia_adm"
+)
+
+# 5. Modelos Did com efeitos fixos (escola + ano) e pesos de pareamento
+
+
+# Matemática (Simples)
+did_mat_matched_fe <- feols(
+  media_profic_mat ~ did | id_escola + ano,
+  data = base_matched_corrected,
+  weights = ~ weights,
+  cluster = ~ id_escola
+)
+
+# Matemática (Covariadas)
+did_mat_covariadas_matched_fe <- feols(
+  media_profic_mat ~ did + pct_feminino + pct_cor_preta + pct_computador +
+    max_escolaridade_mae_pai + pct_pais_incentivam + pct_trabalha_fora +
+    região + id_dependencia_adm
+  | id_escola + ano,
+  data = base_matched_corrected,
+  weights = ~ weights,
+  cluster = ~ id_escola
+)
+
+# Português (Simples)
+did_lp_matched_fe <- feols(
+  media_profic_lp ~ did | id_escola + ano,
+  data = base_matched_corrected,
+  weights = ~ weights,
+  cluster = ~ id_escola
+)
+
+# Português (Covariadas)
+did_lp_covariadas_matched_fe <- feols(
+  media_profic_lp ~ did + pct_feminino + pct_cor_preta + pct_computador +
+    max_escolaridade_mae_pai + pct_pais_incentivam + pct_trabalha_fora +
+    região + id_dependencia_adm
+  | id_escola + ano,
+  data = base_matched_corrected,
+  weights = ~ weights,
+  cluster = ~ id_escola
+)
+
+
+# 6. Reunir modelos em uma lista para visualização
+
+modelos_did_matched <- list(
+  "DiD Matched (Mat) - FE"             = did_mat_matched_fe,
+  "DiD Matched Covariadas (Mat) - FE"  = did_mat_covariadas_matched_fe,
+  "DiD Matched (Port) - FE"            = did_lp_matched_fe,
+  "DiD Matched Covariadas (Port) - FE" = did_lp_covariadas_matched_fe
+)
+
+
+# 7. Mapeamento de nomes das variáveis para aparecer na tabela
+
+nomes_variaveis <- c(
+  "did"                      = "Efeito DiD (Tratamento × Pós)",
+  "pct_feminino"             = "% Alunas Feminino",
+  "pct_cor_preta"            = "% Alunos Pretos",
+  "pct_computador"           = "% com Computador",
+  "max_escolaridade_mae_pai" = "Escolaridade Máxima Pais",
+  "pct_pais_incentivam"      = "% Pais Incentivam",
+  "pct_trabalha_fora"        = "% Trabalha Fora",
+  "região"                   = "Região",
+  "id_dependencia_adm"       = "Dependência Adm"
+)
+
+
+# 8. Geração da Tabela via modelsummary
+
+library(modelsummary)
+library(kableExtra)
+
+tabela_did_matched <- modelsummary(
+  modelos_did_matched,
+  coef_map  = nomes_variaveis,
+  # filtrar para manter apenas 'did' e as covariáveis definidas
+  keep      = c("did", covariadas),
+  gof_map   = c("nobs", "r.squared"),
+  stars     = c('*' = 0.1, '**' = 0.05, '***' = 0.01),
+  title     = "Efeito do Critério Técnico no Desempenho Escolar (Após PSM + FE)",
+  notes     = list(
+    "Erros padrão clusterizados por escola entre parênteses",
+    "Período analisado: 2007-2011",
+    "Modelos (2) e (4) incluem controles para características dos alunos, infraestrutura, região e dependência administrativa",
+    "Inclui efeitos fixos de escola e ano em todos os modelos"
+  ),
+  output    = "kableExtra"
+) %>%
+  kable_styling(
+    bootstrap_options = c("striped", "hover", "condensed"),
+    font_size = 12,
+    full_width = FALSE,
+    latex_options = "hold_position"
+  ) %>%
+  add_header_above(c(" " = 1, "Matemática" = 2, "Português" = 2)) %>%
+  row_spec(0, bold = TRUE, background = "#F5F5F5") %>%
+  column_spec(2:5, width = "4cm") %>%
+  footnote(
+    general         = "Fonte: Elaboração própria com dados da pesquisa",
+    general_title   = "Nota:",
+    footnote_as_chunk = TRUE
+  )
+
+# Exibir a tabela
+tabela_did_matched
