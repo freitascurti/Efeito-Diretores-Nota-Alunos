@@ -1,6 +1,6 @@
 # Efeito-Diretores-Nota-Alunos
 Efeito da forma de ingresso de diretores escolares sobre a nota dos alunos
-O objetivo deste projeto é avaliar como a adoção do critério técnico influencia o desempenho escolar nas áreas de Português (Leitura/LP) e Matemática (MAT). A análise utiliza dados longitudinalmente estruturados de escolas que participaram da pesquisa em três anos consecutivos da PROVA BRASIL(2007, 2009 e 2011).
+O objetivo deste projeto é avaliar, com o software R, como a adoção do critério técnico influencia o desempenho escolar nas áreas de Português (Leitura/LP) e Matemática (MAT). A análise utiliza dados longitudinalmente estruturados de escolas que participaram da pesquisa em três anos consecutivos da PROVA BRASIL(2007, 2009 e 2011).
 # Modelagem
 Efeitos Fixos: Avaliação do impacto do critério técnico controlando para efeitos fixos de escola e ano.
 Logit e PSM: Estimação de modelos logísticos e pareamento por escore de propensão para balanceamento das covariáveis.
